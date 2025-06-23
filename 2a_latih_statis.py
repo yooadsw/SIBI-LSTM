@@ -5,7 +5,9 @@ import os
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 def calculate_angle(a, b, c):
     a = np.array(a)
@@ -43,15 +45,134 @@ def extract_geometric_features(landmarks):
         
     return features
 
-print("Memulai Pelatihan Model Statis...")
+def augment_hand_landmarks(landmarks, noise_factor=0.02, rotation_angle_range=10):
+    """
+    Melakukan augmentasi data pada landmark tangan
+    
+    Args:
+        landmarks: Array landmark tangan (63 nilai: 21 titik × 3 koordinat)
+        noise_factor: Faktor noise untuk augmentasi (default: 0.02)
+        rotation_angle_range: Range rotasi dalam derajat (default: ±10°)
+    
+    Returns:
+        List augmented landmarks
+    """
+    augmented_data = []
+    original_landmarks = np.array(landmarks)
+    
+    # 1. Data asli
+    augmented_data.append(landmarks)
+    
+    # 2. Gaussian Noise Augmentation
+    for i in range(2):  # 2 variasi noise
+        noise = np.random.normal(0, noise_factor, len(landmarks))
+        noisy_landmarks = original_landmarks + noise
+        augmented_data.append(noisy_landmarks.tolist())
+    
+    # 3. Rotation Augmentation (rotasi 2D pada bidang x-y)
+    for i in range(2):  # 2 variasi rotasi
+        angle = np.random.uniform(-rotation_angle_range, rotation_angle_range)
+        angle_rad = np.radians(angle)
+        
+        # Matrix rotasi 2D
+        cos_angle = np.cos(angle_rad)
+        sin_angle = np.sin(angle_rad)
+        
+        rotated_landmarks = []
+        for j in range(0, len(landmarks), 3):
+            x, y, z = landmarks[j], landmarks[j+1], landmarks[j+2]
+            
+            # Rotasi pada bidang x-y, z tetap
+            x_rot = x * cos_angle - y * sin_angle
+            y_rot = x * sin_angle + y * cos_angle
+            
+            rotated_landmarks.extend([x_rot, y_rot, z])
+        
+        augmented_data.append(rotated_landmarks)
+    
+    # 4. Scale Augmentation
+    for i in range(2):  # 2 variasi skala
+        scale_factor = np.random.uniform(0.9, 1.1)  # Skala ±10%
+        scaled_landmarks = (original_landmarks * scale_factor).tolist()
+        augmented_data.append(scaled_landmarks)
+    
+    # 5. Translation Augmentation (translasi kecil)
+    for i in range(1):  # 1 variasi translasi
+        translation = np.random.uniform(-0.05, 0.05, 3)  # Translasi ±5%
+        translated_landmarks = []
+        for j in range(0, len(landmarks), 3):
+            x, y, z = landmarks[j], landmarks[j+1], landmarks[j+2]
+            translated_landmarks.extend([
+                x + translation[0], 
+                y + translation[1], 
+                z + translation[2]
+            ])
+        augmented_data.append(translated_landmarks)
+    
+    return augmented_data
+
+def perform_data_augmentation(df_raw, augmentation_factor=8):
+    """
+    Melakukan augmentasi data pada seluruh dataset
+    
+    Args:
+        df_raw: DataFrame asli
+        augmentation_factor: Total jumlah sampel per data asli (termasuk data asli)
+    
+    Returns:
+        DataFrame yang sudah diaugmentasi
+    """
+    print(f"Melakukan augmentasi data dengan faktor {augmentation_factor}...")
+    print(f"Dataset asli: {len(df_raw)} sampel")
+    
+    augmented_rows = []
+    
+    for idx, row in df_raw.iterrows():
+        label = row.iloc[0]
+        landmarks = row.iloc[1:].tolist()
+        
+        # Augmentasi landmarks
+        augmented_landmarks_list = augment_hand_landmarks(landmarks)
+        
+        # Ambil sesuai augmentation_factor (termasuk data asli)
+        for i in range(min(augmentation_factor, len(augmented_landmarks_list))):
+            new_row = [label] + augmented_landmarks_list[i]
+            augmented_rows.append(new_row)
+    
+    # Buat DataFrame baru
+    columns = df_raw.columns
+    df_augmented = pd.DataFrame(augmented_rows, columns=columns)
+    
+    print(f"Dataset setelah augmentasi: {len(df_augmented)} sampel")
+    print(f"Peningkatan data: {len(df_augmented) / len(df_raw):.1f}x")
+    
+    return df_augmented
+
+print("Memulai Pelatihan Model Statis dengan Data Augmentation...")
 
 NAMA_FILE_CSV = 'data_sibi_statis.csv'
 print(f"Membaca data dari {NAMA_FILE_CSV}...")
 df_raw = pd.read_csv(NAMA_FILE_CSV, header=None)
 
-print("Melakukan Feature Engineering...")
-X_raw = df_raw.iloc[:, 1:]
-y_raw = df_raw.iloc[:, 0]
+# Tampilkan distribusi data asli
+print("\nDistribusi Data Asli:")
+print(df_raw.iloc[:, 0].value_counts().sort_index())
+
+# Lakukan augmentasi data
+USE_AUGMENTATION = True  # Set False jika tidak ingin menggunakan augmentasi
+AUGMENTATION_FACTOR = 8  # Jumlah total sampel per data asli
+
+if USE_AUGMENTATION:
+    df_processed = perform_data_augmentation(df_raw, AUGMENTATION_FACTOR)
+    print("\nDistribusi Data Setelah Augmentasi:")
+    print(df_processed.iloc[:, 0].value_counts().sort_index())
+else:
+    df_processed = df_raw
+    print("Augmentasi data dinonaktifkan.")
+
+print("\nMelakukan Feature Engineering...")
+X_raw = df_processed.iloc[:, 1:]
+y_raw = df_processed.iloc[:, 0]
 
 X_features = X_raw.apply(lambda row: extract_geometric_features(row.tolist()), axis=1, result_type='expand')
 print(f"Dataset baru dengan {X_features.shape[1]} fitur geometris berhasil dibuat.")
@@ -78,13 +199,28 @@ print(f"Akurasi Model Statis pada Data Uji: {accuracy * 100:.2f}%")
 print("\nLaporan Klasifikasi Lengkap:")
 print(classification_report(y_test, y_pred, target_names=le.classes_))
 
+# Generate confusion matrix
+cm = confusion_matrix(y_test, y_pred)
+
+# Simpan confusion matrix untuk visualisasi di Streamlit
 MODELS_DIR = 'models'
 if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
 
+# Simpan model dan komponen
 joblib.dump(model, os.path.join(MODELS_DIR, 'model_statis.pkl'))
 joblib.dump(scaler, os.path.join(MODELS_DIR, 'scaler_statis.pkl'))
 joblib.dump(le, os.path.join(MODELS_DIR, 'label_encoder_statis.pkl'))
 
-print(f"\nModel statis dan komponennya berhasil disimpan di folder '{MODELS_DIR}'.")
+# Simpan confusion matrix dan metadata untuk visualisasi
+evaluation_data = {
+    'confusion_matrix': cm,
+    'class_names': le.classes_,
+    'accuracy': accuracy,
+    'y_test': y_test,
+    'y_pred': y_pred
+}
+joblib.dump(evaluation_data, os.path.join(MODELS_DIR, 'evaluation_statis.pkl'))
+
+print(f"\nModel statis dan data evaluasi berhasil disimpan di folder '{MODELS_DIR}'.")
 print("Pelatihan model statis selesai!")
