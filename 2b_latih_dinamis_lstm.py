@@ -60,7 +60,7 @@ if not os.path.exists(MODELS_DIR):
     os.makedirs(MODELS_DIR)
 
 print("\nMenyimpan Model...")
-model.save(os.path.join(MODELS_DIR, 'model_dinamis_jz.h5'))
+model.save(os.path.join(MODELS_DIR, 'model_dinamis_jz.keras'))
 joblib.dump(label_map, os.path.join(MODELS_DIR, 'label_map_dinamis.pkl'))
 
 print(f"Model dinamis berhasil disimpan di folder '{MODELS_DIR}'.")

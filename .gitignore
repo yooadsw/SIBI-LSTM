@@ -1,0 +1,14 @@
+# Mengabaikan folder environment Anaconda jika ada di dalam
+sibi_final/
+
+# Mengabaikan folder data dinamis yang berisi ribuan file
+data_sibi_dinamis/
+
+# Mengabaikan file data statis (opsional, tapi disarankan)
+*.csv
+
+# Mengabaikan folder log TensorFlow
+Logs/
+
+# Mengabaikan folder model yang dihasilkan
+models/
