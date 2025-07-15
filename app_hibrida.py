@@ -22,10 +22,10 @@ mp_drawing = mp.solutions.drawing_utils
 
 @st.cache_resource
 def load_all_models():
-    model_statis = joblib.load('./models/model_statis.pkl')
-    scaler_statis = joblib.load('./models/scaler_statis.pkl')
-    le_statis = joblib.load('./models/label_encoder_statis.pkl')
-    model_dinamis = load_model('./models/model_dinamis_jz.keras')
+    model_statis = joblib.load('model_statis.pkl')
+    scaler_statis = joblib.load('scaler_statis.pkl')
+    le_statis = joblib.load('label_encoder_statis.pkl')
+    model_dinamis = load_model('model_dinamis_jz.keras')
     return model_statis, scaler_statis, le_statis, model_dinamis
 
 
