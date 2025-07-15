@@ -5,11 +5,15 @@ libsm6
 libxext6
 libxrender-dev
 libgomp1
-libgtk2.0-dev
+libgtk-3-dev
 libavformat-dev
 libavcodec-dev
 libavdevice-dev
 libavutil-dev
 libswscale-dev
 libswresample-dev
+libavfilter-dev
 ffmpeg
+libasound2-dev
+libportaudio2
+portaudio19-dev
