@@ -8,6 +8,6 @@ data_sibi_dinamis/
 *.csv
 
 # Mengabaikan folder log TensorFlow
-Logs/
+
 
 # Mengabaikan folder model yang dihasilkan
