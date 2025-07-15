@@ -43,7 +43,13 @@ def load_all_models():
     """Load all models with error handling"""
     models = {}
     
-    # Check if model files exist
+    # Define possible paths for model files (prioritize models/ folder)
+    possible_paths = [
+        'models/',  # First try models/ folder
+        './',       # Then try root directory
+        ''          # Finally try current directory
+    ]
+    
     required_files = {
         'model_statis': 'model_statis.pkl',
         'scaler_statis': 'scaler_statis.pkl',
@@ -51,33 +57,88 @@ def load_all_models():
         'model_dinamis': 'model_dinamis_jz.keras'
     }
     
+    def find_file(filename):
+        """Find file in possible paths"""
+        for path in possible_paths:
+            full_path = os.path.join(path, filename)
+            if os.path.exists(full_path):
+                return full_path
+        return None
+    
+    # Find all model files
+    found_files = {}
     missing_files = []
+    
     for name, filename in required_files.items():
-        if not os.path.exists(filename):
+        found_path = find_file(filename)
+        if found_path:
+            found_files[name] = found_path
+            st.success(f"✅ Found {name}: {found_path}")
+        else:
             missing_files.append(filename)
+            st.error(f"❌ Missing {name}: {filename}")
+    
+    # Debug: Show directory structure
+    st.write("**Debug - Directory Structure:**")
+    for root, dirs, files in os.walk('.'):
+        level = root.replace('.', '').count(os.sep)
+        indent = ' ' * 2 * level
+        st.write(f"{indent}{os.path.basename(root)}/")
+        subindent = ' ' * 2 * (level + 1)
+        for file in files:
+            if file.endswith(('.pkl', '.keras', '.h5')):
+                st.write(f"{subindent}📁 {file}")
     
     if missing_files:
         st.error(f"File model tidak ditemukan: {', '.join(missing_files)}")
         st.info("Pastikan file model telah diupload ke repository GitHub Anda")
+        
+        # Show current working directory
+        st.write(f"Current working directory: {os.getcwd()}")
+        
+        # Show all files in current directory
+        st.write("Files in current directory:")
+        for item in os.listdir('.'):
+            if os.path.isfile(item):
+                st.write(f"  📄 {item}")
+            elif os.path.isdir(item):
+                st.write(f"  📁 {item}/")
+                # Show files in subdirectory
+                try:
+                    for subitem in os.listdir(item):
+                        st.write(f"    📄 {subitem}")
+                except:
+                    pass
+        
         return None, None, None, None
     
     try:
         # Load static models
-        models['model_statis'] = joblib.load('model_statis.pkl')
-        models['scaler_statis'] = joblib.load('scaler_statis.pkl')
-        models['le_statis'] = joblib.load('label_encoder_statis.pkl')
+        st.info(f"Loading static model from: {found_files['model_statis']}")
+        models['model_statis'] = joblib.load(found_files['model_statis'])
+        
+        st.info(f"Loading scaler from: {found_files['scaler_statis']}")
+        models['scaler_statis'] = joblib.load(found_files['scaler_statis'])
+        
+        st.info(f"Loading label encoder from: {found_files['le_statis']}")
+        models['le_statis'] = joblib.load(found_files['le_statis'])
         
         # Load dynamic model only if TensorFlow is available
         if TENSORFLOW_AVAILABLE:
-            models['model_dinamis'] = load_model('model_dinamis_jz.keras')
+            st.info(f"Loading dynamic model from: {found_files['model_dinamis']}")
+            models['model_dinamis'] = load_model(found_files['model_dinamis'])
         else:
             models['model_dinamis'] = None
             st.warning("Model dinamis tidak dapat dimuat karena TensorFlow tidak tersedia")
         
+        st.success("✅ Semua model berhasil dimuat!")
         return models['model_statis'], models['scaler_statis'], models['le_statis'], models['model_dinamis']
         
     except Exception as e:
         st.error(f"Error memuat model: {str(e)}")
+        st.error(f"Error details: {type(e).__name__}")
+        import traceback
+        st.code(traceback.format_exc())
         return None, None, None, None
 
 def mediapipe_detection(image, model):
