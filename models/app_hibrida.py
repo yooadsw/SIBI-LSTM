@@ -6,6 +6,10 @@ import joblib
 from keras.models import load_model
 from collections import deque
 import tensorflow as tf
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration
+import av
+import threading
+import time
 
 # --- Konfigurasi Halaman ---
 st.set_page_config(
@@ -19,15 +23,13 @@ st.set_page_config(
 mp_holistic = mp.solutions.holistic
 mp_drawing = mp.solutions.drawing_utils
 
-
 @st.cache_resource
 def load_all_models():
-    model_statis = joblib.load('./models/model_statis.pkl')
-    scaler_statis = joblib.load('./models/scaler_statis.pkl')
-    le_statis = joblib.load('./models/label_encoder_statis.pkl')
-    model_dinamis = load_model('./models/model_dinamis_jz.keras')
+    model_statis = joblib.load('model_statis.pkl')
+    scaler_statis = joblib.load('scaler_statis.pkl')
+    le_statis = joblib.load('label_encoder_statis.pkl')
+    model_dinamis = load_model('model_dinamis_jz.keras')
     return model_statis, scaler_statis, le_statis, model_dinamis
-
 
 def mediapipe_detection(image, model):
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -71,13 +73,180 @@ def extract_geometric_features(landmarks):
         features.append(angle2)
     return features
 
-# --- Sidebar: Informasi dan Kontrol ---
+# --- Global Variables untuk Threading ---
+if 'prediction_result' not in st.session_state:
+    st.session_state.prediction_result = "Menunggu..."
+if 'confidence_score' not in st.session_state:
+    st.session_state.confidence_score = 0.0
+if 'hand_detected' not in st.session_state:
+    st.session_state.hand_detected = False
+if 'model_type' not in st.session_state:
+    st.session_state.model_type = "Standby"
+
+# --- WebRTC Video Processor ---
+class SIBIVideoProcessor(VideoTransformerBase):
+    def __init__(self):
+        self.holistic = mp_holistic.Holistic(
+            min_detection_confidence=0.5, 
+            min_tracking_confidence=0.5
+        )
+        
+        # Load models
+        try:
+            self.model_statis, self.scaler_statis, self.le_statis, self.model_dinamis = load_all_models()
+            self.models_loaded = True
+        except:
+            self.models_loaded = False
+        
+        # Configuration
+        self.actions_dinamis = np.array(['J', 'Z', 'Lainnya'])
+        self.sequence_length = 30
+        self.confidence_threshold = 0.98
+        self.prediction_interval = 5
+        self.frame_counter = 0
+        self.sequence_buffer = deque(maxlen=self.sequence_length)
+        
+        # Thread lock
+        self.lock = threading.Lock()
+    
+    def transform(self, frame):
+        # Convert av.VideoFrame to numpy array
+        img = frame.to_ndarray(format="bgr24")
+        
+        if not self.models_loaded:
+            cv2.putText(img, "Error: Model tidak dapat dimuat", (20, 50), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            return img
+        
+        # Flip frame horizontally for mirror effect
+        img = cv2.flip(img, 1)
+        
+        try:
+            # MediaPipe detection
+            image, results = mediapipe_detection(img, self.holistic)
+            
+            # Initialize variables
+            hand_detected = False
+            
+            # Draw landmarks
+            if results.right_hand_landmarks:
+                hand_detected = True
+                mp_drawing.draw_landmarks(
+                    image, results.right_hand_landmarks, 
+                    mp_holistic.HAND_CONNECTIONS
+                )
+            elif results.left_hand_landmarks:
+                hand_detected = True
+                mp_drawing.draw_landmarks(
+                    image, results.left_hand_landmarks, 
+                    mp_holistic.HAND_CONNECTIONS
+                )
+            
+            # Update session state
+            with self.lock:
+                st.session_state.hand_detected = hand_detected
+            
+            # Extract keypoints and add to buffer
+            keypoints = extract_keypoints(results)
+            self.sequence_buffer.append(keypoints)
+            
+            # Prediction logic
+            self.frame_counter += 1
+            if self.frame_counter % self.prediction_interval == 0:
+                self._perform_prediction()
+            
+            # Draw prediction on frame
+            prediction_text = st.session_state.prediction_result
+            confidence = st.session_state.confidence_score
+            model_type = st.session_state.model_type
+            
+            # Main prediction display
+            cv2.putText(image, f"Prediksi: {prediction_text}", (15, 50), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3, cv2.LINE_AA)
+            
+            # Confidence and model type
+            cv2.putText(image, f"Confidence: {confidence:.1f}%", (15, 90), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            cv2.putText(image, f"Model: {model_type}", (15, 120), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            
+            # Hand detection status
+            hand_status = "Terdeteksi" if hand_detected else "Tidak Terdeteksi"
+            color = (0, 255, 0) if hand_detected else (0, 0, 255)
+            cv2.putText(image, f"Tangan: {hand_status}", (15, 150), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            
+        except Exception as e:
+            cv2.putText(image, f"Error: {str(e)}", (20, 50), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        
+        return image
+    
+    def _perform_prediction(self):
+        """Perform prediction using both dynamic and static models"""
+        try:
+            if len(self.sequence_buffer) == self.sequence_length:
+                # Dynamic model prediction
+                input_data = np.expand_dims(list(self.sequence_buffer), axis=0)
+                input_tensor = tf.convert_to_tensor(input_data, dtype=tf.float32)
+                res_dinamis = self.model_dinamis.predict(input_tensor, verbose=0)[0]
+                
+                pred_dinamis = self.actions_dinamis[np.argmax(res_dinamis)]
+                confidence = res_dinamis[np.argmax(res_dinamis)]
+                
+                # Update session state with thread lock
+                with self.lock:
+                    if (pred_dinamis in ['J', 'Z']) and confidence > self.confidence_threshold:
+                        st.session_state.prediction_result = pred_dinamis
+                        st.session_state.confidence_score = confidence * 100
+                        st.session_state.model_type = "Dinamis"
+                    else:
+                        # Static model prediction
+                        self._static_prediction()
+        except Exception as e:
+            with self.lock:
+                st.session_state.prediction_result = "Error"
+                st.session_state.confidence_score = 0.0
+                st.session_state.model_type = "Error"
+    
+    def _static_prediction(self):
+        """Perform static model prediction"""
+        try:
+            last_frame_keypoints = self.sequence_buffer[-1]
+            
+            # Try right hand first, then left hand
+            if np.any(last_frame_keypoints[63:]):
+                single_hand_keypoints = last_frame_keypoints[63:]
+            elif np.any(last_frame_keypoints[:63]):
+                single_hand_keypoints = last_frame_keypoints[:63]
+            else:
+                single_hand_keypoints = None
+            
+            if single_hand_keypoints is not None:
+                features_statis = extract_geometric_features(single_hand_keypoints)
+                scaled_features = self.scaler_statis.transform([features_statis])
+                pred_statis_encoded = self.model_statis.predict(scaled_features)
+                prediction = self.le_statis.inverse_transform(pred_statis_encoded)[0]
+                
+                st.session_state.prediction_result = prediction
+                st.session_state.confidence_score = 85.0  # Placeholder confidence
+                st.session_state.model_type = "Statis"
+            else:
+                st.session_state.prediction_result = "..."
+                st.session_state.confidence_score = 0.0
+                st.session_state.model_type = "Menunggu"
+        except Exception:
+            st.session_state.prediction_result = "Error"
+            st.session_state.confidence_score = 0.0
+            st.session_state.model_type = "Error"
+
+# --- Sidebar ---
 with st.sidebar:
     st.title("🤟 SIBI Translator")
     st.markdown("**Sistem Penerjemah Isyarat Bahasa Indonesia**")
     st.markdown("---")
     
-    # Load Models
+    # Load Models Status
     try:
         model_statis, scaler_statis, le_statis, model_dinamis = load_all_models()
         st.success("✅ Semua Model Berhasil Dimuat")
@@ -98,19 +267,16 @@ with st.sidebar:
         st.error(f"❌ Error memuat model: {str(e)}")
         st.stop()
     
-    # Control Panel
-    st.markdown("### 🎮 Kontrol Kamera")
-    run = st.checkbox('🎥 Aktifkan Kamera', value=False)
-    
     st.markdown("---")
     
     # Usage Instructions
     with st.expander("📝 Cara Penggunaan"):
         st.markdown("""
-        1. **Aktifkan** kamera dengan centang checkbox
-        2. **Posisikan** tangan di depan kamera
-        3. **Buat** isyarat alfabet SIBI
-        4. **Lihat** hasil prediksi real-time
+        1. **Klik Play** pada video stream
+        2. **Izinkan** akses kamera browser
+        3. **Posisikan** tangan di depan kamera
+        4. **Buat** isyarat alfabet SIBI
+        5. **Lihat** hasil prediksi real-time
         """)
     
     # Tips
@@ -120,6 +286,7 @@ with st.sidebar:
         - Pastikan background kontras
         - Posisikan tangan jelas di tengah
         - Jaga jarak optimal dari kamera
+        - Buat gerakan yang jelas dan stabil
         """)
     
     # Statistics
@@ -133,167 +300,135 @@ with st.sidebar:
 # --- Main Content Area ---
 st.header("🎯 Penerjemahan Real-time")
 
-# Layout utama dengan 3 kolom
+# Layout utama
 col1, col2, col3 = st.columns([1, 4, 1])
 
 with col1:
     st.subheader("📊 Status")
-    status_container = st.container()
     
+    # Real-time status updates
+    status_placeholder = st.empty()
+    hand_status_placeholder = st.empty()
+    model_status_placeholder = st.empty()
+
 with col2:
-    # Area video utama (tengah dan besar)
     st.subheader("🎥 Live Camera Feed")
-    video_container = st.container()
     
-    # Hasil prediksi di bawah video
-    st.subheader("🔮 Hasil Prediksi")
-    prediction_container = st.container()
+    # WebRTC Configuration
+    RTC_CONFIGURATION = RTCConfiguration({
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {"urls": ["stun:stun1.l.google.com:19302"]},
+        ]
+    })
+    
+    # WebRTC Streamer
+    webrtc_ctx = webrtc_streamer(
+        key="sibi-translator",
+        video_processor_factory=SIBIVideoProcessor,
+        rtc_configuration=RTC_CONFIGURATION,
+        media_stream_constraints={
+            "video": {
+                "width": {"min": 640, "ideal": 1280, "max": 1920},
+                "height": {"min": 480, "ideal": 720, "max": 1080},
+                "frameRate": {"min": 15, "ideal": 30, "max": 60}
+            },
+            "audio": False
+        },
+        async_processing=True,
+        video_html_attrs={
+            "style": {
+                "width": "100%",
+                "height": "auto",
+                "border": "2px solid #4CAF50",
+                "border-radius": "10px"
+            }
+        }
+    )
 
 with col3:
     st.subheader("📋 Info")
-    info_container = st.container()
+    info_placeholder = st.empty()
 
-# --- Inisialisasi Session State ---
-actions_dinamis = np.array(['J', 'Z', 'Lainnya'])
-sequence_length = 30
-confidence_threshold = 0.98 
-prediction_interval = 5 
-frame_counter = 0
+# --- Prediction Results Area ---
+st.subheader("🔮 Hasil Prediksi")
+col_pred1, col_pred2, col_pred3 = st.columns(3)
 
-if 'sequence_buffer' not in st.session_state:
-    st.session_state.sequence_buffer = deque(maxlen=sequence_length)
-if 'prediction_result' not in st.session_state:
-    st.session_state.prediction_result = "Menunggu..."
+with col_pred1:
+    prediction_placeholder = st.empty()
 
-# --- Main Camera Logic ---
-if run:
-    cap = cv2.VideoCapture(0)
-    
-    # Container untuk video
-    with video_container:
-        FRAME_WINDOW = st.image([])
-    
-    # Container untuk prediksi
-    with prediction_container:
-        prediction_placeholder = st.empty()
-        confidence_placeholder = st.empty()
-    
-    # Container untuk status
-    with status_container:
-        status_placeholder = st.empty()
-        hand_status_placeholder = st.empty()
-    
-    # Container untuk info - Initialize once outside the loop
-    with info_container:
-        info_placeholder = st.empty()
-        info_placeholder.info("🔄 Sistem berjalan normal")
-    
-    with mp_holistic.Holistic(min_detection_confidence=0.5, min_tracking_confidence=0.5) as holistic:
-        while run and cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                status_placeholder.error("⚠️ Gagal membaca frame")
-                continue
+with col_pred2:
+    confidence_placeholder = st.empty()
 
-            frame = cv2.flip(frame, 1)
-            image, results = mediapipe_detection(frame, holistic)
-            
-            # --- Deteksi Tangan dan Gambar Kerangka ---
-            hand_label = "Tidak Terdeteksi"
-            if results.right_hand_landmarks:
-                hand_label = "Terdeteksi"
-                mp_drawing.draw_landmarks(image, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
-            elif results.left_hand_landmarks:
-                hand_label = "Terdeteksi"
-                mp_drawing.draw_landmarks(image, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
-            
-            keypoints = extract_keypoints(results)
-            st.session_state.sequence_buffer.append(keypoints)
+with col_pred3:
+    model_type_placeholder = st.empty()
 
-            frame_counter += 1
-            if frame_counter % prediction_interval == 0:
-                if len(st.session_state.sequence_buffer) == sequence_length:
-                    
-                    input_data = np.expand_dims(list(st.session_state.sequence_buffer), axis=0)
-                    input_tensor = tf.convert_to_tensor(input_data, dtype=tf.float32)
-                    res_dinamis = model_dinamis.predict(input_tensor, verbose=0)[0]
-                    
-                    pred_dinamis = actions_dinamis[np.argmax(res_dinamis)]
-                    confidence = res_dinamis[np.argmax(res_dinamis)]
-
-                    if (pred_dinamis in ['J', 'Z']) and confidence > confidence_threshold:
-                        st.session_state.prediction_result = pred_dinamis
-                        confidence_placeholder.success(f"🎯 Keyakinan: {confidence*100:.1f}%")
-                    else:
-                        try:
-                            last_frame_keypoints = st.session_state.sequence_buffer[-1]
-                            
-                            if np.any(last_frame_keypoints[63:]):
-                                single_hand_keypoints = last_frame_keypoints[63:]
-                            elif np.any(last_frame_keypoints[:63]):
-                                single_hand_keypoints = last_frame_keypoints[:63]
-                            else:
-                                single_hand_keypoints = None
-
-                            if single_hand_keypoints is not None:
-                                features_statis = extract_geometric_features(single_hand_keypoints)
-                                scaled_features = scaler_statis.transform([features_statis])
-                                pred_statis_encoded = model_statis.predict(scaled_features)
-                                st.session_state.prediction_result = le_statis.inverse_transform(pred_statis_encoded)[0]
-                                confidence_placeholder.info("📊 Model Statis Aktif")
-                            else:
-                                st.session_state.prediction_result = "..."
-                                confidence_placeholder.warning("⏳ Menunggu deteksi...")
-                        except Exception:
-                            st.session_state.prediction_result = "Error"
-                            confidence_placeholder.error("❌ Error dalam prediksi")
-
-            # Tampilkan hasil prediksi di frame
-            cv2.putText(image, f"Prediksi: {st.session_state.prediction_result}", (15, 50), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 0), 3, cv2.LINE_AA)
-            
-            # Update UI
-            FRAME_WINDOW.image(image, channels="BGR")
-            
-            # Update containers
-            with prediction_placeholder.container():
-                st.markdown(f"## **{st.session_state.prediction_result}**")
-            
-            with status_placeholder.container():
-                st.success("🟢 Kamera Aktif")
-            
-            with hand_status_placeholder.container():
-                if hand_label == "Terdeteksi":
-                    st.success(f"✅ {hand_label}")
-                else:
-                    st.warning(f"❌ {hand_label}")
-
-    if 'cap' in locals() and cap.isOpened():
-        cap.release()
-    
-    # Update status when camera is stopped
-    with status_container:
-        st.info("🔴 Kamera Dimatikan")
+# --- Status Updates (Real-time) ---
+def update_status():
+    """Update status displays"""
+    if webrtc_ctx.state.playing:
+        # Camera status
+        status_placeholder.success("🟢 Kamera Aktif")
         
-else:
-    # Tampilan default ketika kamera tidak aktif
-    with video_container:
-        st.info("📷 Kamera tidak aktif. Aktifkan kamera dari sidebar untuk memulai.")
+        # Hand detection status
+        if st.session_state.hand_detected:
+            hand_status_placeholder.success("✅ Tangan Terdeteksi")
+        else:
+            hand_status_placeholder.warning("❌ Tangan Tidak Terdeteksi")
+        
+        # Model status
+        model_status_placeholder.info(f"🧠 Model: {st.session_state.model_type}")
+        
+        # Info
+        info_placeholder.info("🔄 Sistem aktif")
+        
+        # Prediction results
+        prediction_placeholder.markdown(f"## **{st.session_state.prediction_result}**")
+        confidence_placeholder.metric("Confidence", f"{st.session_state.confidence_score:.1f}%")
+        model_type_placeholder.metric("Model Type", st.session_state.model_type)
+        
+    else:
+        status_placeholder.info("📷 Kamera Siap")
+        hand_status_placeholder.info("⏸️ Standby")
+        model_status_placeholder.info("⏸️ Model Standby")
+        info_placeholder.info("💤 Klik Play untuk memulai")
+        prediction_placeholder.markdown("## **Menunggu...**")
+        confidence_placeholder.metric("Confidence", "0.0%")
+        model_type_placeholder.metric("Model Type", "Standby")
+
+# Auto-refresh status every second
+if 'last_update' not in st.session_state:
+    st.session_state.last_update = time.time()
+
+current_time = time.time()
+if current_time - st.session_state.last_update > 1:  # Update every second
+    update_status()
+    st.session_state.last_update = current_time
+
+# Initial status update
+update_status()
+
+# --- Troubleshooting Section ---
+with st.expander("🔧 Troubleshooting"):
+    st.markdown("""
+    **Jika kamera tidak berfungsi:**
+    1. Pastikan browser mengizinkan akses kamera
+    2. Refresh halaman dan coba lagi
+    3. Periksa apakah kamera sedang digunakan aplikasi lain
+    4. Gunakan browser Chrome/Firefox untuk kompatibilitas terbaik
     
-    with prediction_container:
-        st.markdown("## **Menunggu...**")
-    
-    with status_container:
-        st.info("📷 Kamera Siap")
-    
-    with info_container:
-        st.info("💤 Sistem dalam mode standby")
+    **Jika prediksi tidak akurat:**
+    1. Pastikan pencahayaan cukup
+    2. Posisikan tangan dengan jelas
+    3. Buat gerakan yang stabil
+    4. Hindari background yang mengganggu
+    """)
 
 # --- Footer ---
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "🎓 Alfabet SIBI | 💻 Teknologi: MediaPipe + TensorFlow + Scikit-learn + Streamlit"
+    "🎓 Alfabet SIBI | 💻 Teknologi: WebRTC + MediaPipe + TensorFlow + Scikit-learn + Streamlit"
     "</div>", 
     unsafe_allow_html=True
 )
