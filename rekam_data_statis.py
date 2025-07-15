@@ -94,7 +94,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.7, model_complexity=1) as h
             
             hand_landmarks, status_text = validate_and_get_hand(results)
             
-            # Gambar landmark jika ada
+            
             if results.right_hand_landmarks:
                 mp_drawing.draw_landmarks(frame, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS)
             if results.left_hand_landmarks:
@@ -106,7 +106,7 @@ with mp_holistic.Holistic(min_detection_confidence=0.7, model_complexity=1) as h
             cv2.putText(frame, f"DATA BARU: {simpan_count} (Total: {existing_count + simpan_count})", (15, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             cv2.putText(frame, f"STATUS: {status_text}", (15, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
         
-        else: # Jika di-pause
+        else: 
             cv2.putText(frame, "PAUSED", (frame.shape[1] // 2 - 100, frame.shape[0] // 2),
                         cv2.FONT_HERSHEY_TRIPLEX, 2, (0, 0, 255), 3)
 

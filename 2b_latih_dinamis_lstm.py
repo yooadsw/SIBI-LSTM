@@ -80,7 +80,6 @@ model.save(os.path.join(MODELS_DIR, 'model_dinamis_jz.keras'))
 # Simpan pemetaan label
 joblib.dump(label_map, os.path.join(MODELS_DIR, 'label_map_dinamis.pkl'))
 
-# --- INILAH BARIS YANG DITAMBAHKAN ---
 # Simpan objek history yang berisi data akurasi dan loss per epoch
 joblib.dump(history.history, os.path.join(MODELS_DIR, 'history_dinamis.pkl'))
 

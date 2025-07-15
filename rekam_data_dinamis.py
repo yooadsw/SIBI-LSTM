@@ -27,11 +27,11 @@ def extract_keypoints(results):
 def main():
     print("--- Perekam Data Dinamis Interaktif ---")
     
-    # --- BLOK VALIDASI INPUT YANG DIPERBAIKI ---
+    
     prompt_actions = ['J', 'Z', 'Lainnya'] # Ini yang ditampilkan ke pengguna
     while True:
         user_input = input(f"Masukkan aksi yang akan direkam ({', '.join(prompt_actions)}): ").strip()
-        action_upper = user_input.upper() # Ubah input ke huruf besar untuk perbandingan
+        action_upper = user_input.upper() 
         
         if action_upper in actions:
             # Jika input adalah 'LAINNYA', kita gunakan nama folder yang benar ('Lainnya')
